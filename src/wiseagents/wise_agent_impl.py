@@ -11,7 +11,8 @@ from wiseagents.graphdb import WiseAgentGraphDB
 
 from wiseagents.vectordb import Document, WiseAgentVectorDB
 
-from wiseagents import WiseAgent, WiseAgentMessage, WiseAgentRegistry, WiseAgentTransport, WiseAgentTool
+from wiseagents import WiseAgent, WiseAgentContext, WiseAgentMessage, WiseAgentRegistry, WiseAgentTransport, \
+    WiseAgentTool
 from wiseagents.llm import WiseAgentLLM
 
 
@@ -163,64 +164,65 @@ class LLMWiseAgentWithTools(WiseAgent):
         logging.debug(f"IA Request received: {request}")
         chat_id= str(uuid.uuid4())
         ctx = WiseAgentRegistry.get_or_create_context(request.context_name)
-        ctx.append_chat_completion(chat_uuid=chat_id, messages= {"role": "system", "content": self.llm.system_message})
-        ctx.append_chat_completion(chat_uuid=chat_id, messages= {"role": "user", "content": request.message})
+        _plan_and_execute_tools_calls(ctx, chat_id, request.message, self._tools, self, request)
+        #ctx.append_chat_completion(chat_uuid=chat_id, messages= {"role": "system", "content": self.llm.system_message})
+        #ctx.append_chat_completion(chat_uuid=chat_id, messages= {"role": "user", "content": request.message})
         
-        for tool in self._tools:
-            ctx.append_available_tool_in_chat(chat_uuid=chat_id, tools=WiseAgentRegistry.get_tool(tool).get_tool_OpenAI_format())
+        #for tool in self._tools:
+        #    ctx.append_available_tool_in_chat(chat_uuid=chat_id, tools=WiseAgentRegistry.get_tool(tool).get_tool_OpenAI_format())
             
-        logging.debug(f"messages: {ctx.llm_chat_completion[chat_id]}, Tools: {ctx.get_available_tools_in_chat(chat_uuid=chat_id)}")    
-        llm_response = self.llm.process_chat_completion(ctx.llm_chat_completion[chat_id], ctx.get_available_tools_in_chat(chat_uuid=chat_id))
+        #logging.debug(f"messages: {ctx.llm_chat_completion[chat_id]}, Tools: {ctx.get_available_tools_in_chat(chat_uuid=chat_id)}")    
+        #llm_response = self.llm.process_chat_completion(ctx.llm_chat_completion[chat_id], ctx.get_available_tools_in_chat(chat_uuid=chat_id))
         
         ##calling tool
-        response_message = llm_response.choices[0].message
-        tool_calls = response_message.tool_calls
-        logging.debug(f"Tool calls: {tool_calls}")
-        logging.debug(f"Response message: {response_message}")
+        #response_message = llm_response.choices[0].message
+        #tool_calls = response_message.tool_calls
+        #logging.debug(f"Tool calls: {tool_calls}")
+        #logging.debug(f"Response message: {response_message}")
         # Step 2: check if the model wanted to call a function
-        if tool_calls is not None:
+        #if tool_calls is not None:
             # Step 3: call the function
             # TODO: the JSON response may not always be valid; be sure to handle errors
-            ctx.append_chat_completion(chat_uuid=chat_id, messages= response_message)  # extend conversation with assistant's reply
+        #    ctx.append_chat_completion(chat_uuid=chat_id, messages= response_message)  # extend conversation with assistant's reply
             
             # Step 4: send the info for each function call and function response to the model
-            for tool_call in tool_calls:
+        #    for tool_call in tool_calls:
                 #record the required tool call in the context/chatid
-                ctx.append_required_tool_call(chat_uuid=chat_id, tool_name=tool_call.function.name)
+        #        ctx.append_required_tool_call(chat_uuid=chat_id, tool_name=tool_call.function.name)
                 
-            for tool_call in tool_calls:
-                function_name = tool_call.function.name
-                wise_agent_tool : WiseAgentTool = WiseAgentRegistry.get_tool(function_name)
-                if wise_agent_tool.is_agent_tool:
+        #    for tool_call in tool_calls:
+        #        function_name = tool_call.function.name
+        #        wise_agent_tool : WiseAgentTool = WiseAgentRegistry.get_tool(function_name)
+        #        if wise_agent_tool.is_agent_tool:
                     #call the agent with correlation ID and complete the chat on response
-                    self.send_request(WiseAgentMessage(message=tool_call.function.arguments, sender=self.name, 
-                                                       chat_id=chat_id, tool_id=tool_call.id, context_name=request.context_name,
-                                                       route_response_to=request.sender), 
-                                      dest_agent_name=function_name)
-                else:
-                    function_args = json.loads(tool_call.function.arguments)
-                    function_response = wise_agent_tool.exec(**function_args)
-                    logging.debug(f"Function response: {function_response}")
-                    ctx.append_chat_completion(chat_uuid=chat_id, messages= 
-                        {
-                            "tool_call_id": tool_call.id,
-                            "role": "tool",
-                            "name": function_name,
-                            "content": function_response,
-                        }
-                    )  # extend conversation with function response
-                    ctx.remove_required_tool_call(chat_uuid=chat_id, tool_name=tool_call.function.name)
+        #            self.send_request(WiseAgentMessage(message=tool_call.function.arguments, sender=self.name, 
+        #                                               chat_id=chat_id, tool_id=tool_call.id, context_name=request.context_name,
+        #                                               route_response_to=request.sender), 
+        #                              dest_agent_name=function_name)
+        #        else:
+        #            function_args = json.loads(tool_call.function.arguments)
+        #            function_response = wise_agent_tool.exec(**function_args)
+        #            logging.debug(f"Function response: {function_response}")
+        #            ctx.append_chat_completion(chat_uuid=chat_id, messages= 
+        #                {
+        #                    "tool_call_id": tool_call.id,
+        #                    "role": "tool",
+        #                    "name": function_name,
+        #                    "content": function_response,
+        #                }
+        #            )  # extend conversation with function response
+        #            ctx.remove_required_tool_call(chat_uuid=chat_id, tool_name=tool_call.function.name)
             
         
         #SEND THE RESPONSE IF NOT ASYNC, OTHERWISE WE WILL DO LATER IN PROCESS_RESPONSE
-        if ctx.get_required_tool_calls(chat_uuid=chat_id) == []: # if all tool calls have been completed (no asynch needed)
-            llm_response = self.llm.process_chat_completion(ctx.llm_chat_completion[chat_id], 
-                                                            ctx.get_available_tools_in_chat(chat_uuid=chat_id))
-            response_message = llm_response.choices[0].message
-            logging.debug(f"sending response {response_message.content} to: {request.sender}")
-            self.send_response(WiseAgentMessage(response_message.content, self.name), request.sender )
-            ctx.llm_chat_completion.pop(chat_id)
-            return True
+        #if ctx.get_required_tool_calls(chat_uuid=chat_id) == []: # if all tool calls have been completed (no asynch needed)
+        #    llm_response = self.llm.process_chat_completion(ctx.llm_chat_completion[chat_id], 
+        #                                                    ctx.get_available_tools_in_chat(chat_uuid=chat_id))
+        #    response_message = llm_response.choices[0].message
+        #    logging.debug(f"sending response {response_message.content} to: {request.sender}")
+        #    self.send_response(WiseAgentMessage(response_message.content, self.name), request.sender )
+        #    ctx.llm_chat_completion.pop(chat_id)
+        #    return True
     def process_response(self, response : WiseAgentMessage):
         '''Process a response message and sending the response back to the client.
         It invoke also the tool if required. Tool could be a callback function or another agent.
@@ -632,6 +634,296 @@ class SequentialCoordinatorWiseAgent(WiseAgent):
         self._response_delivery = response_delivery
 
 
+class CoordinatorWiseAgent(WiseAgent):
+    """
+    This agent will coordinate the execution of a group of agents, make use of
+    a reasoning agent to coordinate the collaboration and a final answer agent
+    to format the final answer and send it back to the client.
+    """
+    yaml_tag = u'!wiseagents.CoordinatorWiseAgent'
+
+    def __init__(self, name: str, description: str, transport: WiseAgentTransport, llm: WiseAgentLLM,
+                 reasoning_agent_name: str, final_answer_agent_name: str):
+        """
+        Initialize the agent.
+
+        Args:
+            name (str): the name of the agent
+            description (str): a description of the agent
+            transport (WiseAgentTransport): the transport to use for communication
+            llm (WiseAgentLLM): the LLM to use for coordinating the collaboration
+            reasoning_agent_name (str): the name of the agent to use for reasoning
+            final_answer_agent_name (str): the name of the agent to use for formatting the final answer
+        """
+        self._name = name
+        self._reasoning_agent_name = reasoning_agent_name
+        self._final_answer_agent_name = final_answer_agent_name
+        self._route_response_to = ""
+        super().__init__(name=name, description=description, transport=transport, llm=llm, is_orchestration_agent=True)
+
+    def __repr__(self):
+        """Return a string representation of the agent."""
+        return (f"{self.__class__.__name__}(name={self.name}, description={self.description}, transport={self.transport},"
+                f"llm={self.llm}, reasoning_agent_name={self._reasoning_agent_name},"
+                f"final_answer_agent_name={self._final_answer_agent_name})")
+
+    def process_request(self, request):
+        """
+        Process a request message by kicking off the collaboration.
+
+        Args:
+            request (WiseAgentMessage): the request message to process
+        """
+        logging.debug(f"Coordinator received request: {request}")
+        self._route_response_to = request.sender
+        chat_id = str(uuid.uuid4())
+        ctx = WiseAgentRegistry.get_or_create_context(request.context_name)
+
+        # Decompose the original request into sub-tasks
+        task_decomposition_prompt = ("Given the following query and a description of the agents that are available to"
+                                     " help answer the query, decompose the query into a list of sub-tasks."
+                                     " Assume that one or more agents can work together to complete a sub-task."
+                                     " Format the response with one sub-task per line and don't include anything else in"
+                                     " the response:\n" + "Query: " + request.message + "\n" + "Available agents:\n" +
+                                     "\n".join(WiseAgentRegistry.get_agent_names_and_descriptions()) + "\n")
+        ctx.append_chat_completion(chat_uuid=chat_id, messages={"role": "system", "content": self.llm.system_message})
+        ctx.append_chat_completion(chat_uuid=chat_id, messages={"role": "user", "content": task_decomposition_prompt})
+
+        logging.debug(f"messages: {ctx.llm_chat_completion[chat_id]}")
+        llm_response = self.llm.process_chat_completion(ctx.llm_chat_completion[chat_id], tools=[])
+        sub_tasks = llm_response.choices[0].message.content.splitlines()
+        ctx.set_task(chat_uuid=chat_id, task=request.message)
+        for sub_task in sub_tasks:
+            ctx.append_required_sub_task(chat_uuid=chat_id, sub_task=sub_task)
+
+        # Determine the agents that can achieve its sub-task and execute them
+
+
+    def process_response(self, response):
+        """Process a response message by passing it to the next agent in the sequence.
+
+        Args:
+            response (WiseAgentMessage): the response message to process"""
+        ctx = WiseAgentRegistry.get_or_create_context(response.context_name)
+        self.send_response(WiseAgentMessage(message=response.message, sender=self.name, context_name=response.context_name), self._route_response_to)
+        return True
+
+    def process_event(self, event):
+        """Do nothing"""
+        return True
+
+    def process_error(self, error):
+        """Log the error and return True."""
+        logging.error(error)
+        return True
+
+    def get_recipient_agent_name(self, message):
+        """
+        Return the name of the agent to send the message to.
+
+        Args:
+            message (WiseAgentMessage): the message to process
+        """
+        return self.name
+
+    def stop(self):
+        """Do nothing"""
+        pass
+
+    @property
+    def name(self) -> str:
+        """Get the name of the agent."""
+        return self._name
+
+    @property
+    def reasoning_agent_name(self) -> str:
+        """Get the name of the reasoning agent."""
+        return self._reasoning_agent_name
+
+    @property
+    def final_answer_agent_name(self) -> str:
+        """Get the name of the final answer agent."""
+        return self._final_answer_agent_name
+
+    @property
+    def response_delivery(self) -> Optional[Callable[[], WiseAgentMessage]]:
+        """
+        Get the function to deliver the response to the client.
+
+        Returns:
+            (Callable[[], WiseAgentMessage]): the function to deliver the response to the client
+        """
+        return self._response_delivery
+
+    def set_response_delivery(self, response_delivery: Callable[[], WiseAgentMessage]):
+        """
+        Set the function to deliver the response to the client.
+
+        Args:
+            response_delivery (Callable[[], WiseAgentMessage]): the function to deliver the response to the
+        """
+        self._response_delivery = response_delivery
+
+class ReasoningWiseAgent(WiseAgent):
+    """
+    This agent implementation is used to determine if a sub-task or a task
+    has been completed.
+    """
+    yaml_tag = u'!wiseagents.ReasoningWiseAgent'
+
+    def __init__(self, name: str, description: str, transport: WiseAgentTransport, llm: WiseAgentLLM):
+        """
+        Initialize the agent.
+
+        Args:
+            name (str): the name of the agent
+            description (str): a description of the agent
+            transport (WiseAgentTransport): the transport to use for communication
+            llm (WiseAgentLLM): the LLM to use for reasoning
+        """
+        super().__init__(name=name, description=description, transport=transport, llm=llm, is_orchestration_agent=True)
+
+    def __repr__(self):
+        """Return a string representation of the agent."""
+        return (f"{self.__class__.__name__}(name={self.name}, description={self.description}, transport={self.transport},"
+                f"llm={self.llm})")
+
+    def process_request(self, request):
+        """
+        TODO
+        """
+
+    def process_response(self, response):
+        """
+        TODO
+        """
+        return True
+
+    def process_event(self, event):
+        """Do nothing"""
+        return True
+
+    def process_error(self, error):
+        """Log the error and return True."""
+        logging.error(error)
+        return True
+
+    def get_recipient_agent_name(self, message):
+        """
+        Return the name of the agent to send the message to.
+
+        Args:
+            message (WiseAgentMessage): the message to process
+        """
+        return self.name
+
+    def stop(self):
+        """Do nothing"""
+        pass
+
+    @property
+    def name(self) -> str:
+        """Get the name of the agent."""
+        return self._name
+    @property
+    def response_delivery(self) -> Optional[Callable[[], WiseAgentMessage]]:
+        """
+        Get the function to deliver the response to the client.
+
+        Returns:
+            (Callable[[], WiseAgentMessage]): the function to deliver the response to the client
+        """
+        return self._response_delivery
+
+    def set_response_delivery(self, response_delivery: Callable[[], WiseAgentMessage]):
+        """
+        Set the function to deliver the response to the client.
+
+        Args:
+            response_delivery (Callable[[], WiseAgentMessage]): the function to deliver the response to the
+        """
+        self._response_delivery = response_delivery
+
+class FinalAnswerWiseAgent(WiseAgent):
+    """
+    This agent implementation is used to format the final answer in the desired manner.
+    """
+    yaml_tag = u'!wiseagents.FinalAnswerWiseAgent'
+
+    def __init__(self, name: str, description: str, transport: WiseAgentTransport, llm: Optional[WiseAgentLLM] = None):
+        """
+        Initialize the agent.
+
+        Args:
+            name (str): the name of the agent
+            description (str): a description of the agent
+            transport (WiseAgentTransport): the transport to use for communication
+            llm (Optional[WiseAgentLLM]): the LLM to use for reasoning
+        """
+        super().__init__(name=name, description=description, transport=transport, llm=llm, is_orchestration_agent=True)
+
+    def __repr__(self):
+        """Return a string representation of the agent."""
+        return (f"{self.__class__.__name__}(name={self.name}, description={self.description}, transport={self.transport},"
+                f"llm={self.llm})")
+
+    def process_request(self, request):
+        """
+        TODO
+        """
+
+    def process_response(self, response):
+        """
+        TODO
+        """
+        return True
+
+    def process_event(self, event):
+        """Do nothing"""
+        return True
+
+    def process_error(self, error):
+        """Log the error and return True."""
+        logging.error(error)
+        return True
+
+    def get_recipient_agent_name(self, message):
+        """
+        Return the name of the agent to send the message to.
+
+        Args:
+            message (WiseAgentMessage): the message to process
+        """
+        return self.name
+
+    def stop(self):
+        """Do nothing"""
+        pass
+
+    @property
+    def name(self) -> str:
+        """Get the name of the agent."""
+        return self._name
+    @property
+    def response_delivery(self) -> Optional[Callable[[], WiseAgentMessage]]:
+        """
+        Get the function to deliver the response to the client.
+
+        Returns:
+            (Callable[[], WiseAgentMessage]): the function to deliver the response to the client
+        """
+        return self._response_delivery
+
+    def set_response_delivery(self, response_delivery: Callable[[], WiseAgentMessage]):
+        """
+        Set the function to deliver the response to the client.
+
+        Args:
+            response_delivery (Callable[[], WiseAgentMessage]): the function to deliver the response to the
+        """
+        self._response_delivery = response_delivery
+
+
 def _create_and_process_rag_prompt(retrieved_documents: List[Document], question: str, llm: WiseAgentLLM) -> str:
     '''Create a RAG prompt and process it with the LLM agent.
 
@@ -649,4 +941,68 @@ def _create_and_process_rag_prompt(retrieved_documents: List[Document], question
         source_documents += f"Source Document:\n    Content: {document.content}\n    Metadata: {json.dumps(document.metadata)}\n\n"
     llm_response_with_sources = f"{llm_response.content}\n\nSource Documents:\n{source_documents}"
     return llm_response_with_sources
+
+def _plan_and_execute_tools_calls(ctx: WiseAgentContext, chat_id: str, user_message: str,
+                                  tools: List[str], sender_agent: WiseAgent, request: WiseAgentMessage):
+    ctx.append_chat_completion(chat_uuid=chat_id, messages={"role": "system", "content": sender_agent.llm.system_message})
+    ctx.append_chat_completion(chat_uuid=chat_id, messages={"role": "user", "content": user_message})
+
+    for tool in tools:
+        ctx.append_available_tool_in_chat(chat_uuid=chat_id,
+                                          tools=WiseAgentRegistry.get_tool(tool).get_tool_OpenAI_format())
+
+    logging.debug(f"messages: {ctx.llm_chat_completion[chat_id]}, Tools: {ctx.get_available_tools_in_chat(chat_uuid=chat_id)}")
+    llm_response = sender_agent.llm.process_chat_completion(ctx.llm_chat_completion[chat_id],
+                                               ctx.get_available_tools_in_chat(chat_uuid=chat_id))
+
+    ##calling tool
+    response_message = llm_response.choices[0].message
+    tool_calls = response_message.tool_calls
+    logging.debug(f"Tool calls: {tool_calls}")
+    logging.debug(f"Response message: {response_message}")
+    # Step 2: check if the model wanted to call a function
+    if tool_calls is not None:
+        # Step 3: call the function
+        # TODO: the JSON response may not always be valid; be sure to handle errors
+        ctx.append_chat_completion(chat_uuid=chat_id,
+                                   messages=response_message)  # extend conversation with assistant's reply
+
+        # Step 4: send the info for each function call and function response to the model
+        for tool_call in tool_calls:
+            # record the required tool call in the context/chatid
+            ctx.append_required_tool_call(chat_uuid=chat_id, tool_name=tool_call.function.name)
+
+        for tool_call in tool_calls:
+            function_name = tool_call.function.name
+            wise_agent_tool: WiseAgentTool = WiseAgentRegistry.get_tool(function_name)
+            if wise_agent_tool.is_agent_tool:
+                # call the agent with correlation ID and complete the chat on response
+                sender_agent.send_request(WiseAgentMessage(message=tool_call.function.arguments, sender=sender_agent.name,
+                                                   chat_id=chat_id, tool_id=tool_call.id,
+                                                   context_name=request.context_name,
+                                                   route_response_to=request.sender),
+                                  dest_agent_name=function_name)
+            else:
+                function_args = json.loads(tool_call.function.arguments)
+                function_response = wise_agent_tool.exec(**function_args)
+                logging.debug(f"Function response: {function_response}")
+                ctx.append_chat_completion(chat_uuid=chat_id, messages=
+                {
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": function_response,
+                }
+                                           )  # extend conversation with function response
+                ctx.remove_required_tool_call(chat_uuid=chat_id, tool_name=tool_call.function.name)
+
+    # SEND THE RESPONSE IF NOT ASYNC, OTHERWISE WE WILL DO LATER IN PROCESS_RESPONSE
+    if ctx.get_required_tool_calls(chat_uuid=chat_id) == []:  # if all tool calls have been completed (no asynch needed)
+        llm_response = sender_agent.llm.process_chat_completion(ctx.llm_chat_completion[chat_id],
+                                                        ctx.get_available_tools_in_chat(chat_uuid=chat_id))
+        response_message = llm_response.choices[0].message
+        logging.debug(f"sending response {response_message.content} to: {request.sender}")
+        sender_agent.send_response(WiseAgentMessage(response_message.content, sender_agent.name), request.sender)
+        ctx.llm_chat_completion.pop(chat_id)
+        return True
 

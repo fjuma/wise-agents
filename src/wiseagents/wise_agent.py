@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import json
 import logging
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 from uuid import UUID
 
 from wiseagents.graphdb import WiseAgentGraphDB
@@ -20,7 +20,7 @@ class WiseAgent(yaml.YAMLObject):
     yaml_tag = u'!wiseagents.WiseAgent'
     def __init__(self, name: str, description: str, transport: WiseAgentTransport, llm: Optional[WiseAgentLLM] = None,
                  vector_db: Optional[WiseAgentVectorDB] = None, collection_name: Optional[str] = "wise-agent-collection",
-                 graph_db: Optional[WiseAgentGraphDB] = None):
+                 graph_db: Optional[WiseAgentGraphDB] = None, is_orchestration_agent: Optional[bool] = False):
         ''' 
         Initialize the agent with the given name, description, transport, LLM, vector DB, collection name, and graph DB.
         
@@ -32,7 +32,8 @@ class WiseAgent(yaml.YAMLObject):
             llm Optional(WiseAgentLLM): the LLM associated with the agent
             vector_db Optional(WiseAgentVectorDB): the vector DB associated with the agent
             collection_name Optional(str) = "wise-agent-collection": the vector DB collection name associated with the agent
-            graph_db Optional (WiseAgentGraphDB): the graph DB associated with the agent 
+            graph_db Optional (WiseAgentGraphDB): the graph DB associated with the agent
+            is_orchestration_agent Optional(bool) = False: whether the agent is an orchestration agent 
         '''
         self._name = name
         self._description = description
@@ -41,8 +42,9 @@ class WiseAgent(yaml.YAMLObject):
         self._collection_name = collection_name
         self._graph_db = graph_db
         self._transport = transport
+        self._is_orchestration_agent = is_orchestration_agent
         self.startAgent()
-        
+
     def startAgent(self):
         ''' Start the agent by setting the call backs and starting the transport.'''
         self.transport.set_call_backs(self.process_request, self.process_event, self.process_error, self.process_response)
@@ -56,7 +58,8 @@ class WiseAgent(yaml.YAMLObject):
     def __repr__(self):
         '''Return a string representation of the agent.'''
         return (f"{self.__class__.__name__}(name={self.name}, description={self.description}, llm={self.llm},"
-                f"vector_db={self.vector_db}, collection_name={self._collection_name}, graph_db={self.graph_db})")
+                f"vector_db={self.vector_db}, collection_name={self._collection_name}, graph_db={self.graph_db},"
+                f"is_orchestration_agent={self._is_orchestration_agent})")
     
     @property
     def name(self) -> str:
@@ -92,7 +95,12 @@ class WiseAgent(yaml.YAMLObject):
     def transport(self) -> WiseAgentTransport:
         """Get the transport associated with the agent."""
         return self._transport
-    
+
+    @property
+    def is_orchestration_agent(self) -> bool:
+        """Return whether the agent is an orchestration agent."""
+        return self._is_orchestration_agent
+
     def send_request(self, message: WiseAgentMessage, dest_agent_name: str):
         '''Send a request message to the destination agent with the given name.
 
@@ -279,8 +287,11 @@ class WiseAgentContext():
     _llm_required_tool_call : Dict[str, List[str]] = {}
     _llm_available_tools_in_chat : Dict[str, List[ChatCompletionToolParam]] = {}
     _agents_sequence : List[str] = []
-    
-    
+    _tasks : Dict[str, str] = {}
+    _sub_tasks : Dict[str, List[str]] = {}
+
+
+
     def __init__(self, name: str):
         ''' Initialize the context with the given name.
 
@@ -431,6 +442,62 @@ class WiseAgentContext():
                 return self._agents_sequence[next_agent_index]
         return None
 
+    @property
+    def tasks(self) -> Dict[str, str]:
+        """
+        Get the tasks associated with this context.
+
+        Returns:
+            Dict[str, List[str]]: a dictionary mapping chat uuids to tasks
+        """
+        return self._tasks
+
+    def set_task(self, chat_uuid: str, task: str):
+        """
+        Set the task for the given chat uuid for this context.
+
+        Args:
+            chat_uuid (str): the chat uuid
+            task (str): the task description
+        """
+        self.tasks[chat_uuid] = task
+
+    @property
+    def sub_tasks(self) -> Dict[str, List[str]]:
+        """
+        Get the sub-tasks associated with this context.
+
+        Returns:
+            Dict[str, List[str]]: a dictionary mapping chat uuids to sub-tasks
+        """
+        return self._sub_tasks
+
+    def append_required_sub_task(self, chat_uuid: str, sub_task: str):
+        """
+        Append the required sub-task for the given chat uuid for this context.
+
+        Args:
+            chat_uuid (str): the chat uuid
+            sub_task (str): the sub-task description
+        """
+        if chat_uuid not in self.sub_tasks:
+            self.sub_tasks[chat_uuid] = []
+        self.sub_tasks[chat_uuid].append(sub_task)
+
+    def remove_required_sub_task(self, chat_uuid: str, sub_task: str):
+        """
+        Remove the required sub-task for the given chat uuid from this context.
+
+        Args:
+            chat_uuid (str): the chat uuid
+            sub_task (str): the sub-task description to remove
+        """
+        if chat_uuid in self.sub_tasks:
+            self.sub_tasks[chat_uuid].remove(sub_task)
+            if len(self.sub_tasks[chat_uuid]) == 0:
+                self.sub_tasks.pop(chat_uuid)
+
+
 class WiseAgentRegistry:
 
     """
@@ -540,5 +607,24 @@ class WiseAgentRegistry:
         Get the tool with the given name
         """
         return cls.tools.get(tool_name)
-        
-        
+
+    @classmethod
+    def get_agent_names_and_descriptions(cls, include_orchestration_agents: Optional[bool] = False) -> List[str]:
+        """
+        Get the list of agent names and descriptions.
+
+        Args:
+            include_orchestration_agents (Optional[bool]): whether to include orchestration agents in the list
+            (default is False)
+
+        Returns:
+            List[str]: the list of agent descriptions
+        """
+        agent_descriptions = []
+        for agent_name, agent in cls.agents.items():
+            if agent.is_orchestration_agent and not include_orchestration_agents:
+                continue
+            agent_descriptions.append("Agent Name: " + agent_name + " Agent Description: " + agent.description)
+
+        return agent_descriptions
+
