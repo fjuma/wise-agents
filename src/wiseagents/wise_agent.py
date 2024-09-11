@@ -2,6 +2,7 @@ import copy
 from abc import ABC, abstractmethod
 import json
 import logging
+from enum import Enum, auto
 from typing import Any, Callable, Dict, Iterable, List, Optional
 from uuid import UUID
 
@@ -14,7 +15,11 @@ from wiseagents.vectordb import WiseAgentVectorDB
 import yaml
 from openai.types.chat import ChatCompletionToolParam, ChatCompletionMessageParam
 
-
+class WiseAgentCollaborationType(Enum):
+    SEQUENTIAL = auto()
+    PHASED = auto()
+    INDEPENDENT = auto()
+ 
 class WiseAgent(yaml.YAMLObject):
     ''' A WiseAgent is an abstract class that represents an agent that can send and receive messages to and from other agents.
     '''
@@ -60,7 +65,7 @@ class WiseAgent(yaml.YAMLObject):
         
     def startAgent(self):
         ''' Start the agent by setting the call backs and starting the transport.'''
-        self.transport.set_call_backs(self.process_request, self.process_event, self.process_error, self.process_response)
+        self.transport.set_call_backs(self.handle_request, self.process_event, self.process_error, self.process_response)
         self.transport.start()
         WiseAgentRegistry.register_agent(self) 
     def stopAgent(self):
@@ -137,20 +142,104 @@ class WiseAgent(yaml.YAMLObject):
         context.add_participant(self)
         self.transport.send_response(message, dest_agent_name)
         context.message_trace.append(message)  
-    
-    @abstractmethod
-    def process_request(self, message: WiseAgentMessage) -> bool:
-        """
-        Callback method to process the given request for this agent.
 
+    def handle_request(self, request: WiseAgentMessage) -> bool:
+        """
+        Callback method to handle the given request for this agent. This method optionally retrieves
+        conversation history from the shared context depending on the type of collaboration the agent
+        is involved in (i.e., sequential, phased, or independent) and passes this to the process_request
+        method. Finally, it handles the response from the process_request method, ensuring the shared
+        context is updated if necessary, and determines which agent to the send the response to, both
+        depending on the type of collaboration the agent is involved in.
 
         Args:
-            message (WiseAgentMessage): the message to be processed
+            request (WiseAgentMessage): the request message to be processed
 
         Returns:
             True if the message was processed successfully, False otherwise
         """
+        context = WiseAgentRegistry.get_or_create_context(request.context_name)
+        collaboration_type = context.get_collaboration_type(request.chat_id)
+        conversation_history = self.get_conversation_history_if_needed(context, request.chat_id, collaboration_type)
+        response_str = self.process_request(request, conversation_history)
+        return self.handle_response(response_str, request, context, collaboration_type)
+
+    def get_conversation_history_if_needed(self, context: WiseAgentContext,
+                                           chat_id: Optional[str], collaboration_type: str) -> List[ChatCompletionMessageParam]:
+        """
+        Get the conversation history for the given chat id from the given context, depending on the
+        type of collaboration the agent is involved in (i.e., sequential, phased, independent).
+
+        Args:
+            context (WiseAgentContext): the shared context
+            chat_id (Optional[str]): the chat id, may be None
+            collaboration_type (str): the type of collaboration this agent is involved in
+
+        Returns:
+            List[ChatCompletionMessageParam]: the conversation history for the given chat id if the agent
+            is involved in a collaboration type that makes use of the conversation history and an empty list
+            otherwise
+        """
+        if chat_id:
+            if collaboration_type == WiseAgentCollaborationType.PHASED:
+                # this agent is involved in phased collaboration, so it needs the conversation history
+                return context.llm_chat_completion.get(chat_id)
+        # for sequential collaboration and independent agents, the shared history is not needed
+        return []
+
+    @abstractmethod
+    def process_request(self, request: WiseAgentMessage,
+                         conversation_history: List[ChatCompletionMessageParam]) -> str:
+        """
+        Process the given request message to generate a response string.
+
+        Args:
+            request (WiseAgentMessage): the request message to be processed
+            conversation_history (List[ChatCompletionMessageParam]): The conversation history that
+            can be used while processing the request. If this agent isn't involved in a type of
+            collaboration that makes use of the conversation history, this will be an empty list.
+
+        Returns:
+            str: the response to the request message as a string
+        """
         ...
+
+    def handle_response(self, response_str: str, request: WiseAgentMessage,
+                        context: WiseAgentContext, collaboration_type: str) -> bool:
+        """
+        Handles the given string response, ensuring the shared context is updated if necessary
+        and determines which agent to the send the response to, both depending on the type of
+        collaboration the agent is involved in (i.e., sequential, phased, or independent).
+
+        Args:
+            response_str (str): the string response to be handled
+            context (WiseAgentContext): the shared context
+            chat_id (Optional[str]): the chat id, may be None
+            collaboration_type (str): the type of collaboration this agent is involved in
+
+        Returns:
+            True if the message was processed successfully, False otherwise
+        """
+        if collaboration_type == WiseAgentCollaborationType.PHASED:
+            # add this agent's response to the shared context
+            context.append_chat_completion(chat_uuid=request.chat_id, messages=response_str)
+
+            # let the sender know that this agent has finished processing the request
+            self.send_response(
+                WiseAgentMessage(message="", message_type=WiseAgentMessageType.ACK, sender=self.name,
+                                 context_name=context.name,
+                                 chat_id=request.chat_id), request.sender)
+        elif collaboration_type == WiseAgentCollaborationType.SEQUENTIAL:
+            # TODO: tweak this so the message just gets sent to the next agent in the sequence
+            # or back to the coordinator
+            self.send_response(WiseAgentMessage(message=response_str, sender=self.name,
+                                                context_name=context.name, chat_id=request.chat_id),
+                               request.sender)
+        else:
+            self.send_response(WiseAgentMessage(message=response_str, sender=self.name,
+                                                context_name=context.name, chat_id=request.chat_id),
+                               request.sender)
+        return True
 
     @abstractmethod
     def process_response(self, message: WiseAgentMessage) -> bool:
@@ -165,6 +254,7 @@ class WiseAgent(yaml.YAMLObject):
             True if the message was processed successfully, False otherwise
         """
         ...
+
 
     @abstractmethod
     def process_event(self, event: WiseAgentEvent) -> bool:
@@ -328,6 +418,9 @@ class WiseAgentContext():
     # Maps a chat uuid to a list containing the queries attempted for each iteration executed by
     # the phased coordinator
     _queries : Dict[str, List[str]] = {}
+
+    # Maps a chat uuid to the collaboration type
+    _collaboration_type : Dict[str, WiseAgentCollaborationType] = {}
 
     def __init__(self, name: str):
         ''' Initialize the context with the given name.
@@ -654,6 +747,26 @@ class WiseAgentContext():
             return self._queries.get(chat_uuid)
         else:
             return []
+
+    @property
+    def collaboration_type(self) -> Dict[str, WiseAgentCollaborationType]:
+        """Get the collaboration type for chat uuids for this context."""
+        return self._collaboration_type
+    
+    def get_collaboration_type(self, chat_uuid: Optional[str]) -> WiseAgentCollaborationType:
+        """
+        Get the collaboration type for the given chat uuid for this context.
+
+        Args:
+            chat_uuid (Optional[str]): the chat uuid, may be None
+
+        Returns:
+            WiseAgentCollaborationType: the collaboration type
+        """
+        if chat_uuid in self.collaboration_type:
+            return self.collaboration_type.get(chat_uuid)
+        else:
+            return WiseAgentCollaborationType.INDEPENDENT
 
 
 class WiseAgentRegistry:

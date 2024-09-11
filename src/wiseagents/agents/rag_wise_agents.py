@@ -2,6 +2,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from openai.types.chat import ChatCompletionMessageParam
 from wiseagents.graphdb import WiseAgentGraphDB
 
 from wiseagents.vectordb import Document, WiseAgentVectorDB
@@ -80,7 +81,7 @@ class RAGWiseAgent(WiseAgent):
         logging.error(error)
         return True
 
-    def process_request(self, request: WiseAgentMessage):
+    def process_request(self, request: WiseAgentMessage, conversation_history: List[ChatCompletionMessageParam]) -> str:
         """
         Process a request message using retrieval augmented generation (RAG) and sending the response back to the client.
 
@@ -90,8 +91,8 @@ class RAGWiseAgent(WiseAgent):
         retrieved_documents = self.vector_db.query([request.message], self.collection_name, self.k)
         llm_response_with_sources = _create_and_process_rag_prompt(retrieved_documents[0], request.message, self.llm,
                                                                    self.include_sources)
-        self.send_response(WiseAgentMessage(llm_response_with_sources, self.name), request.sender)
-        return True
+        #self.send_response(WiseAgentMessage(llm_response_with_sources, self.name), request.sender)
+        return llm_response_with_sources
 
     def process_response(self, response: WiseAgentMessage):
         """Do nothing"""
@@ -186,7 +187,7 @@ class GraphRAGWiseAgent(WiseAgent):
         logging.error(error)
         return True
 
-    def process_request(self, request: WiseAgentMessage):
+    def process_request(self, request: WiseAgentMessage, conversation_history: List[ChatCompletionMessageParam]) -> str:
         """
         Process a request message by passing it to the RAG agent and sending the response back to the client.
 
@@ -198,8 +199,8 @@ class GraphRAGWiseAgent(WiseAgent):
                                                                   params=self.params,
                                                                   metadata_filter=self.metadata_filter)
         llm_response_with_sources = _create_and_process_rag_prompt(retrieved_documents, request.message, self.llm, self.include_sources)
-        self.send_response(WiseAgentMessage(llm_response_with_sources, self.name), request.sender)
-        return True
+        #self.send_response(WiseAgentMessage(llm_response_with_sources, self.name), request.sender)
+        return llm_response_with_sources
 
     def process_response(self, response: WiseAgentMessage):
         """Do nothing"""
@@ -307,7 +308,7 @@ class CoVeChallengerRAGWiseAgent(WiseAgent):
         logging.error(error)
         return True
 
-    def process_request(self, request: WiseAgentMessage):
+    def process_request(self, request: WiseAgentMessage, conversation_history: List[ChatCompletionMessageParam]) -> str:
         """
         Process a message containing a question and a baseline response to the question
         by challenging the baseline response to generate a revised response to the original question.
@@ -316,8 +317,8 @@ class CoVeChallengerRAGWiseAgent(WiseAgent):
             request (WiseAgentMessage): the request message to process
         """
         llm_response = self._create_and_process_chain_of_verification_prompts(request.message)
-        self.send_response(WiseAgentMessage(llm_response, self.name), request.sender)
-        return True
+        #self.send_response(WiseAgentMessage(llm_response, self.name), request.sender)
+        return llm_response
 
     def process_response(self, response: WiseAgentMessage):
         """Do nothing"""

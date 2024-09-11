@@ -40,7 +40,7 @@ class PassThroughClientAgent(WiseAgent):
         return (f"{self.__class__.__name__}(name={self.name}, description={self.description},"
                 f"destination_agent_name={self.destination_agent_name})")
 
-    def process_request(self, request):
+    def handle_request(self, request):
         """Process a request message by just passing it to another agent."""
         self.send_request(WiseAgentMessage(request, self.name), self.destination_agent_name)
         return True
@@ -127,7 +127,7 @@ class LLMOnlyWiseAgent(WiseAgent):
         logging.error(error)
         return True
 
-    def process_request(self, request: WiseAgentMessage):
+    def process_request(self, request: WiseAgentMessage, conversation_history: List[ChatCompletionMessageParam]) -> str:
         """
         Process a request message by passing it to the LLM agent and sending the response back to the client.
 
@@ -135,8 +135,8 @@ class LLMOnlyWiseAgent(WiseAgent):
             request (WiseAgentMessage): the request message to process
         """
         llm_response = self.llm.process_single_prompt(request.message)
-        self.send_response(WiseAgentMessage(message=llm_response.content, sender=self.name, context_name=request.context_name, chat_id=request.chat_id), request.sender )
-        return True
+        #self.send_response(WiseAgentMessage(message=llm_response.content, sender=self.name, context_name=request.context_name, chat_id=request.chat_id), request.sender )
+        return llm_response.content
 
     def process_response(self, response : WiseAgentMessage):
         """Do nothing"""
@@ -194,7 +194,7 @@ class LLMWiseAgentWithTools(WiseAgent):
         logging.error(error)
         return True
 
-    def process_request(self, request: WiseAgentMessage):
+    def process_request(self, request: WiseAgentMessage, conversation_history: List[ChatCompletionMessageParam]) -> str:
         """
         Process a request message by passing it to the LLM agent and sending the response back to the client.
         It invoke also the tool if required. Tool could be a callback function or another agent.
@@ -260,9 +260,9 @@ class LLMWiseAgentWithTools(WiseAgent):
                                                             ctx.get_available_tools_in_chat(chat_uuid=chat_id))
             response_message = llm_response.choices[0].message
             logging.debug(f"sending response {response_message.content} to: {request.sender}")
-            self.send_response(WiseAgentMessage(response_message.content, self.name), request.sender )
+            #self.send_response(WiseAgentMessage(response_message.content, self.name), request.sender )
             ctx.llm_chat_completion.pop(chat_id)
-            return True
+            return response_message.content
 
     def process_response(self, response : WiseAgentMessage):
         """
