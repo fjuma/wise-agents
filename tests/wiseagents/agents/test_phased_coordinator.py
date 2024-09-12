@@ -1,15 +1,17 @@
+import logging
 import os
 import threading
 
 import pytest
 
 from wiseagents import WiseAgentMessage, WiseAgentRegistry
-from wiseagents.agents import CollaboratorWiseAgent, PassThroughClientAgent, PhasedCoordinatorWiseAgent
+from wiseagents.agents import LLMOnlyWiseAgent, PassThroughClientAgent, \
+    PhasedCoordinatorWiseAgent
 from wiseagents.llm import OpenaiAPIWiseAgentLLM
 from wiseagents.transports import StompWiseAgentTransport
 
 cond = threading.Condition()
-
+assertError : AssertionError = None
 
 @pytest.fixture(scope="session", autouse=True)
 def run_after_all_tests():
@@ -20,8 +22,12 @@ def run_after_all_tests():
 def final_response_delivered(message: WiseAgentMessage):
     with cond:
         response = message.message
-        assert response
-        print(f"C Response delivered: {response}")
+        try:
+            assert response
+            print(f"C Response delivered: {response}")
+        except AssertionError:
+            logging.info(f"assertion failed")
+            assertError = AssertionError
         cond.notify()
 
 
@@ -29,6 +35,7 @@ def test_phased_coordinator():
     """
     Requires STOMP_USER, STOMP_PASSWORD, and a Groq API_KEY.
     """
+    global assertError
     groq_api_key = os.getenv("GROQ_API_KEY")
 
     llm = OpenaiAPIWiseAgentLLM(system_message="You are a helpful assistant.",
@@ -42,18 +49,18 @@ def test_phased_coordinator():
                                   system_message="You will be coordinating a group of agents to solve a problem.",
                                   max_iterations=2)
 
-    agent2 = CollaboratorWiseAgent(name="Agent2", description="This agent provides information about error messages using Source1", llm=llm,
+    agent2 = LLMOnlyWiseAgent(name="Agent2", description="This agent provides information about error messages using Source1", llm=llm,
                                    transport=StompWiseAgentTransport(host='localhost', port=61616,
                                                                      agent_name="Agent2"),
                                    system_message="You are a helpful assistant that will provide information about the given error message")
 
-    agent3 = CollaboratorWiseAgent(name="Agent3", description="This agent provides information about error messages using Source2",
+    agent3 = LLMOnlyWiseAgent(name="Agent3", description="This agent provides information about error messages using Source2",
                                    llm=llm,
                                    transport=StompWiseAgentTransport(host='localhost', port=61616,
                                                                      agent_name="Agent3"),
                                    system_message="You are a helpful assistant that will provide information about the given error message")
 
-    agent4 = CollaboratorWiseAgent(name="Agent4",
+    agent4 = LLMOnlyWiseAgent(name="Agent4",
                                    description="This agent describes the underlying cause of a problem given information about the problem. This agent" +
                                                " should be called after getting information about the problem using Agent2 or Agent3.",
                                    llm=llm,
@@ -61,7 +68,7 @@ def test_phased_coordinator():
                                                                      agent_name="Agent4"),
                                    system_message="You are a helpful assistant that will determine the underlying cause of a problem given information about the problem")
 
-    agent5 = CollaboratorWiseAgent(name="Agent5",
+    agent5 = LLMOnlyWiseAgent(name="Agent5",
                                    description="This agent is used to verify if the information provided by other agents is accurate. This " +
                                                "agent should be called after getting information about a problem using Agent2 or Agent3. This agent " +
                                                "should be called before calling Agent4.",
@@ -80,6 +87,9 @@ def test_phased_coordinator():
                                                     "PassThroughClientAgent1"),
                                    "Coordinator")
         cond.wait()
+        if assertError is not None:
+            logging.info(f"assertion failed")
+            raise assertError
 
         print(f"registered agents= {WiseAgentRegistry.get_agents()}")
         for message in WiseAgentRegistry.get_or_create_context('default').message_trace:
