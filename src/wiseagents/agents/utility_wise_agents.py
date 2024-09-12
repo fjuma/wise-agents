@@ -3,7 +3,8 @@ import logging
 from typing import Callable, List, Optional
 import uuid
 
-from wiseagents import WiseAgent, WiseAgentMessage, WiseAgentRegistry, WiseAgentTransport, \
+from openai.types.chat import ChatCompletionMessageParam
+from wiseagents import WiseAgent, WiseAgentCollaborationType, WiseAgentMessage, WiseAgentRegistry, WiseAgentTransport, \
     WiseAgentTool
 from wiseagents.llm import WiseAgentLLM
 
@@ -44,7 +45,7 @@ class PassThroughClientAgent(WiseAgent):
             destination_agent_name={self.destination_agent_name},\
             response_delivery={self.response_delivery}"
      
-    def process_request(self, request):
+    def handle_request(self, request):
         """Process a request message by just passing it to another agent."""
         self.send_request(WiseAgentMessage(request, self.name), self.destination_agent_name)
         return True
@@ -104,8 +105,15 @@ class LLMOnlyWiseAgent(WiseAgent):
     response received from the LLM.
     """
     yaml_tag = u'!wiseagents.agents.LLMOnlyWiseAgent'
+    
+    def __new__(cls, *args, **kwargs):
+        """Create a new instance of the class, setting default values for the instance variables."""
+        obj = super().__new__(cls)
+        obj._system_message = None
+        return obj
 
-    def __init__(self, name: str, description: str, llm : WiseAgentLLM, transport: WiseAgentTransport):
+    def __init__(self, name: str, description: str, llm : WiseAgentLLM, transport: WiseAgentTransport,
+                 system_message: Optional[str] = None):
         """
         Initialize the agent.
 
@@ -114,16 +122,20 @@ class LLMOnlyWiseAgent(WiseAgent):
             description (str): a description of the agent
             llm (WiseAgentLLM): the LLM agent to use for processing requests
             transport (WiseAgentTransport): the transport to use for communication
+            system_message (Optional[str]): the optional system message to be used by the collaborator when processing
+            chat completions using its LLM
         """
         self._name = name
         self._description = description
         self._transport = transport
         llm_agent = llm
-        super().__init__(name=name, description=description, transport=self.transport, llm=llm_agent)
+        super().__init__(name=name, description=description, transport=self.transport, llm=llm_agent,
+                         system_message=system_message)
 
     def __repr__(self):
         """Return a string representation of the agent."""
-        return f"{self.__class__.__name__}(name={self.name}, description={self.description}, llm={self.llm}, transport={self.transport})"
+        return (f"{self.__class__.__name__}(name={self.name}, description={self.description}, llm={self.llm}, transport={self.transport},"
+                f"system_message={self.system_message})")
         
     def process_event(self, event):
         """Do nothing"""
@@ -134,16 +146,20 @@ class LLMOnlyWiseAgent(WiseAgent):
         logging.error(error)
         return True
 
-    def process_request(self, request: WiseAgentMessage):
+    def process_request(self, request: WiseAgentMessage, conversation_history: List[ChatCompletionMessageParam]) -> str:
         """
-        Process a request message by passing it to the LLM agent and sending the response back to the client.
+        Process a request message by passing it to the LLM.
 
         Args:
             request (WiseAgentMessage): the request message to process
+            conversation_history (List[ChatCompletionMessageParam]): The conversation history that
+            can be used while processing the request. If this agent isn't involved in a type of
+            collaboration that makes use of the conversation history, this will be an empty list.
         """
-        llm_response = self.llm.process_single_prompt(request.message)
-        self.send_response(WiseAgentMessage(message=llm_response.content, sender=self.name, context_name=request.context_name, chat_id=request.chat_id), request.sender )
-        return True
+        conversation_history.append({"role": "system", "content": self.system_message or self.llm.system_message})
+        conversation_history.append({"role": "user", "content": request.message})
+        llm_response = self.llm.process_chat_completion(conversation_history, [])
+        return llm_response.choices[0].message.content
 
     def process_response(self, response : WiseAgentMessage):
         """Do nothing"""
@@ -173,24 +189,37 @@ class LLMWiseAgentWithTools(WiseAgent):
     to send back to the client.
     """
     yaml_tag = u'!wiseagents.agents.LLMWiseAgentWithTools'
-    def __init__(self, name: str, description: str, llm : WiseAgentLLM, transport: WiseAgentTransport, tools: List[str]):
-        '''Initialize the agent.
+    
+    def __new__(cls, *args, **kwargs):
+        """Create a new instance of the class, setting default values for the instance variables."""
+        obj = super().__new__(cls)
+        obj._system_message = None
+        return obj
+    
+    def __init__(self, name: str, description: str, llm : WiseAgentLLM, transport: WiseAgentTransport, tools: List[str],
+                 system_message: Optional[str] = None):
+        """
+        Initialize the agent.
 
         Args:
             name (str): the name of the agent
             description (str): a description of the agent
             llm (WiseAgentLLM): the LLM agent to use for processing requests
-            transport (WiseAgentTransport): the transport to use for communication'''
+            transport (WiseAgentTransport): the transport to use for communication
+            system_message (Optional[str]): the optional system message to be used by the collaborator when processing
+            chat completions using its LLM
+        """
         self._name = name
         self._description = description
         self._transport = transport
         llm_agent = llm
         self._tools = tools
-        super().__init__(name=name, description=description, transport=self.transport, llm=llm_agent)
+        super().__init__(name=name, description=description, transport=self.transport, llm=llm_agent, system_message=system_message)
 
     def __repr__(self):
         """Return a string representation of the agent."""
-        return f"{self.__class__.__name__}(name={self.name}, description={self.description}, llm={self.llm}, transport={self.transport})"
+        return (f"{self.__class__.__name__}(name={self.name}, description={self.description}, llm={self.llm}, transport={self.transport},"
+                f"system_message={self.system_message})")
 
     def process_event(self, event):
         """Do nothing"""
@@ -201,13 +230,16 @@ class LLMWiseAgentWithTools(WiseAgent):
         logging.error(error)
         return True
 
-    def process_request(self, request: WiseAgentMessage):
+    def process_request(self, request: WiseAgentMessage, conversation_history: List[ChatCompletionMessageParam]) -> str:
         """
-        Process a request message by passing it to the LLM agent and sending the response back to the client.
-        It invoke also the tool if required. Tool could be a callback function or another agent.
+        Process a request message by passing it to the LLM agent.
+        It also invokes tool(s) if required. Tool(s) could be a callback function or another agent.
 
         Args:
             request (WiseAgentMessage): the request message to process
+            conversation_history (List[ChatCompletionMessageParam]): The conversation history that
+            can be used while processing the request. If this agent isn't involved in a type of
+            collaboration that makes use of the conversation history, this will be an empty list.
         """
         logging.debug(f"IA Request received: {request}")
         chat_id= str(uuid.uuid4())
@@ -267,9 +299,8 @@ class LLMWiseAgentWithTools(WiseAgent):
                                                             ctx.get_available_tools_in_chat(chat_uuid=chat_id))
             response_message = llm_response.choices[0].message
             logging.debug(f"sending response {response_message.content} to: {request.sender}")
-            self.send_response(WiseAgentMessage(response_message.content, self.name), request.sender )
             ctx.llm_chat_completion.pop(chat_id)
-            return True
+            return response_message.content
 
     def process_response(self, response : WiseAgentMessage):
         """

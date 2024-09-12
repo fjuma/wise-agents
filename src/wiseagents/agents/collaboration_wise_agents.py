@@ -2,7 +2,7 @@ import logging
 from typing import Callable, List, Optional
 import uuid
 
-from wiseagents import WiseAgent, WiseAgentMessage, WiseAgentMessageType, WiseAgentRegistry, WiseAgentTransport
+from wiseagents import WiseAgent, WiseAgentCollaborationType, WiseAgentMessage, WiseAgentMessageType, WiseAgentRegistry, WiseAgentTransport
 from wiseagents.llm import WiseAgentLLM
 
 CONFIDENCE_SCORE_THRESHOLD = 85
@@ -34,7 +34,7 @@ class SequentialCoordinatorWiseAgent(WiseAgent):
         """Return a string representation of the agent."""
         return f"{self.__class__.__name__}(name={self.name}, description={self.description}, agents={self.agents})"
 
-    def process_request(self, request):
+    def handle_request(self, request):
         """
         Process a request message by passing it to the first agent in the sequence.
 
@@ -47,6 +47,7 @@ class SequentialCoordinatorWiseAgent(WiseAgent):
         chat_id = str(uuid.uuid4())
 
         ctx = WiseAgentRegistry.get_or_create_context(request.context_name)
+        ctx.set_collaboration_type(chat_id, WiseAgentCollaborationType.SEQUENTIAL)
         ctx.set_agents_sequence(chat_id, self._agents)
         ctx.set_route_response_to(chat_id, request.sender)
         self.send_request(WiseAgentMessage(message=request.message, sender=self.name, context_name=request.context_name,
@@ -182,7 +183,7 @@ class PhasedCoordinatorWiseAgent(WiseAgent):
         """Get the confidence score threshold."""
         return self._confidence_score_threshold
 
-    def process_request(self, request):
+    def handle_request(self, request):
         """
         Process a request message by kicking off the collaboration in phases.
 
@@ -195,6 +196,7 @@ class PhasedCoordinatorWiseAgent(WiseAgent):
         chat_id = str(uuid.uuid4())
 
         ctx = WiseAgentRegistry.get_or_create_context(request.context_name)
+        ctx.set_collaboration_type(chat_id, WiseAgentCollaborationType.PHASED)
         ctx.set_route_response_to(chat_id, request.sender)
 
         # Determine the agents required to answer the query
@@ -403,7 +405,7 @@ class CollaboratorWiseAgent(WiseAgent):
         logging.error(error)
         return True
 
-    def process_request(self, request: WiseAgentMessage):
+    def handle_request(self, request: WiseAgentMessage):
         """
         Process a request message by passing it to the LLM and then send a response back to the sender
         to let them know the request has been processed.
